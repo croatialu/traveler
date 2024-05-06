@@ -1,4 +1,7 @@
 import type { ServerWebSocket } from "bun"
+import wrtc from '@roamhq/wrtc'
+import * as Y from 'yjs'
+import { WebrtcProvider } from 'y-webrtc';
 
 const wsReadyStateConnecting = 0
 const wsReadyStateOpen = 1
@@ -6,14 +9,15 @@ const wsReadyStateOpen = 1
 
 interface WSSubscribePayload {
   type: 'subscribe'
+  topics: string[]
 }
 interface WSUnsubscribePayload {
   type: 'unsubscribe'
+  topics: string[]
 }
 interface WSPublishPayload {
   type: 'publish'
   topic: string
-  data: any
 }
 
 interface WSPingPayload {
@@ -45,10 +49,23 @@ const setConnRecord = (ws: WebSocketConn, record: Partial<ConnRecord>) => {
     ...record
   })
 }
-const removeConnRecord = (ws: WebSocketConn) => {
+
+function removeConnRecord(ws: WebSocketConn) {
+  const subscribedTopics = getConnRecord(ws).subscribedTopics
+
+  subscribedTopics.forEach(topicName => {
+    const subs = topics.get(topicName) || new Set()
+    subs.delete(ws)
+    if (subs.size <= 1) {
+      topics.delete(topicName)
+      const ydoc = ydocs.get(topicName)
+      ydoc?.destroy()
+      ydocs.delete(topicName)
+    }
+  })
+  subscribedTopics.clear()
   connRecords.delete(ws)
 }
-
 
 
 const topics = new Map<string, Set<WebSocketConn>>()
@@ -83,6 +100,39 @@ const send = (conn: WebSocketConn, message: any) => {
   }
 }
 
+const ydocs = new Map<string, Y.Doc>()
+const initWebrtcProvider = (topic: string) => {
+  if (ydocs.get(topic))
+    return ydocs.get(topic)
+
+  console.log('init webrtc provider', topic)
+  const ydoc = new Y.Doc()
+  ydocs.set(topic, ydoc)
+  const provider = new WebrtcProvider(topic, ydoc, {
+    signaling: ['ws://localhost:3000'],
+
+    peerOpts: {
+      wrtc: {
+        RTCSessionDescription: wrtc.RTCSessionDescription,
+        RTCPeerConnection: wrtc.RTCPeerConnection,
+        RTCIceCandidate: wrtc.RTCIceCandidate,
+      },
+    }
+  })
+
+  ydoc.on('update', () => {
+    console.log('update', ydoc.getArray('state').toJSON())
+  })
+
+  ydoc.on('destroy', () => {
+    provider.destroy()
+  })
+
+
+  return ydoc
+}
+
+
 
 
 Bun.serve<WebSocketPayload>({
@@ -96,17 +146,44 @@ Bun.serve<WebSocketPayload>({
   },
   websocket: {
     message(ws, message) {
-      const messageData = ws.data
-
+      const messageData = JSON.parse(message  as any) as WebSocketPayload
+      console.log(messageData, 'messageData')
       switch (messageData.type) {
         case 'ping':
           send(ws, { type: 'pong' })
           break
-        case 'publish':
+        case 'publish': {
+          const { topic } = messageData
+          const subscribers = topics.get(topic)
+          if (subscribers) {
+            const size = subscribers.size
+            subscribers.forEach((subscriber) => {
+              send(subscriber, {
+                ...messageData,
+                clients: size,
+              })
+            })
+          }
+        }
           break
         case 'subscribe':
+          (messageData.topics || []).forEach((topicName) => {
+            const { subscribedTopics } = getConnRecord(ws)
+            subscribedTopics.add(topicName)
+
+            const topic = topics.get(topicName) || new Set()
+            topic.add(ws)
+            topics.set(topicName, topic)
+
+            initWebrtcProvider(topicName)
+          })
           break
         case 'unsubscribe':
+          (messageData.topics || []).forEach((topicName) => {
+            const subs = topics.get(topicName)
+
+            subs?.delete(ws)
+          })
           break
       }
 
@@ -123,18 +200,11 @@ Bun.serve<WebSocketPayload>({
       setConnRecord(ws, { pongReceived: true })
     },
     close(ws, code, message) {
-      const { subscribedTopics } = getConnRecord(ws)
-      subscribedTopics.forEach(topicName => {
-        const subs = topics.get(topicName) || new Set()
-        subs.delete(ws)
-        if (subs.size === 0) {
-          topics.delete(topicName)
-        }
-      })
-
-      subscribedTopics.clear()
+       
       removeConnRecord(ws)
     }, // a socket is closed
     drain(ws) { }, // the socket is ready to receive more data
   }
 })
+
+console.log('server started on port 3000')
