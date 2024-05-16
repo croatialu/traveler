@@ -1,8 +1,8 @@
 import http from 'node:http'
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws'
 import wrtc from '@roamhq/wrtc'
 import * as Y from 'yjs'
-import { WebrtcProvider } from 'y-webrtc';
+import { WebrtcProvider } from 'y-webrtc'
 
 Object.assign(global, { WebSocket })
 
@@ -38,13 +38,14 @@ interface ConnRecord {
   subscribedTopics: Set<string>
   pongReceived: boolean
 }
+const topics = new Map<string, Set<WebSocketConn>>()
+const ydocs = new Map<string, Y.Doc>()
 
 const connRecords = new Map<WebSocketConn, ConnRecord>()
 
 function getConnRecord(ws: WebSocketConn) {
   if (!connRecords.get(ws))
     connRecords.set(ws, { pongReceived: false, subscribedTopics: new Set() })
-
 
   return connRecords.get(ws)!
 }
@@ -57,7 +58,7 @@ function setConnRecord(ws: WebSocketConn, record: Partial<ConnRecord>) {
 function removeConnRecord(ws: WebSocketConn) {
   const subscribedTopics = getConnRecord(ws).subscribedTopics
 
-  subscribedTopics.forEach(topicName => {
+  subscribedTopics.forEach((topicName) => {
     const subs = topics.get(topicName) || new Set()
     subs.delete(ws)
     console.log(subs.size, 'subs.size')
@@ -71,9 +72,6 @@ function removeConnRecord(ws: WebSocketConn) {
   subscribedTopics.clear()
   connRecords.delete(ws)
 }
-
-const topics = new Map<string, Set<WebSocketConn>>()
-const ydocs = new Map<string, Y.Doc>()
 
 function startPingPong(ws: WebSocketConn) {
   const pingInterval = setInterval(() => {
@@ -106,11 +104,10 @@ function send(conn: WebSocketConn, message: any) {
   }
 }
 
-const initWebrtcProvider = (topic: string) => {
+function initWebrtcProvider(topic: string) {
   if (ydocs.get(topic))
     return ydocs.get(topic)
 
-  console.log('init webrtc provider', topic)
   const ydoc = new Y.Doc()
   ydocs.set(topic, ydoc)
   const provider = new WebrtcProvider(topic, ydoc, {
@@ -122,21 +119,18 @@ const initWebrtcProvider = (topic: string) => {
         RTCPeerConnection: wrtc.RTCPeerConnection,
         RTCIceCandidate: wrtc.RTCIceCandidate,
       },
-    }
+    },
   })
 
   ydoc.on('update', () => {
-    console.log('update', ydoc.getArray('state').toJSON())
   })
 
   ydoc.on('destroy', () => {
     provider.destroy()
   })
 
-
   return ydoc
 }
-
 
 const wss = new WebSocketServer({
   port: 3000,
@@ -145,10 +139,10 @@ const wss = new WebSocketServer({
       // See zlib defaults.
       chunkSize: 1024,
       memLevel: 7,
-      level: 3
+      level: 3,
     },
     zlibInflateOptions: {
-      chunkSize: 10 * 1024
+      chunkSize: 10 * 1024,
     },
     // Other options settable:
     clientNoContextTakeover: true, // Defaults to negotiated value.
@@ -156,21 +150,19 @@ const wss = new WebSocketServer({
     serverMaxWindowBits: 10, // Defaults to negotiated value.
     // Below options specified as default values.
     concurrencyLimit: 10, // Limits zlib concurrency for perf.
-    threshold: 1024 // Size (in bytes) below which messages
+    threshold: 1024, // Size (in bytes) below which messages
     // should not be compressed if context takeover is disabled.
 
-  }
-});
-
+  },
+})
 
 wss.on('connection', (ws) => {
   setConnRecord(ws, {
     pongReceived: true,
-    subscribedTopics: new Set()
+    subscribedTopics: new Set(),
   })
 
   startPingPong(ws)
-
 
   ws.on('message', (data) => {
     const message = JSON.parse(data.toString()) as WebSocketPayload
@@ -181,7 +173,7 @@ wss.on('connection', (ws) => {
             initWebrtcProvider(topicName)
 
             const subscribedTopics = getConnRecord(ws).subscribedTopics
-            
+
             const topic = topics.get(topicName) || new Set()
             topic.add(ws)
             topics.set(topicName, topic)
@@ -202,7 +194,6 @@ wss.on('connection', (ws) => {
         const subscribers = topics.get(topic)
         if (subscribers) {
           const size = subscribers.size
-          console.log('publish', topic, size)
           subscribers.forEach((subscriber) => {
             send(subscriber, {
               ...message,
@@ -220,8 +211,8 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     removeConnRecord(ws)
-
   })
 })
 
+// eslint-disable-next-line no-console
 console.log('Server started at ws://localhost:3000')
